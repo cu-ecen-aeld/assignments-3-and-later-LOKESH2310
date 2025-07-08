@@ -1,4 +1,13 @@
 #include "systemcalls.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <stdarg.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <fcntl.h>
+
 
 /**
  * @param cmd the command to execute with system()
@@ -17,7 +26,19 @@ bool do_system(const char *cmd)
  *   or false() if it returned a failure
 */
 
-    return true;
+    int ret = system(cmd);
+
+    if (ret == -1) {
+        perror("system");
+        return false;
+    }
+
+    // WEXITSTATUS extracts return value from status
+    if (WIFEXITED(ret) && WEXITSTATUS(ret) == 0) {
+        return true;
+    }
+
+    return false;
 }
 
 /**
@@ -59,9 +80,39 @@ bool do_exec(int count, ...)
  *
 */
 
-    va_end(args);
+    pid_t pid = fork();
 
-    return true;
+    if (pid == -1) {
+        // fork failed
+        perror("fork");
+        va_end(args);
+        return false;
+    }
+
+    if (pid == 0) {
+        // child process
+        execv(command[0], command);
+        // if execv returns, it must have failed
+        perror("execv");
+        exit(1);
+    } else {
+        // parent process
+        int status;
+        if (waitpid(pid, &status, 0) == -1) {
+            perror("waitpid");
+            va_end(args);
+            return false;
+        }
+
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            va_end(args);
+            return true;  // command executed successfully
+        } else {
+            va_end(args);
+            return false;  // command returned an error
+        }
+    }
+
 }
 
 /**
@@ -93,7 +144,55 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *
 */
 
-    va_end(args);
+    pid_t pid = fork();
 
-    return true;
+    if (pid == -1) {
+        perror("fork");
+        va_end(args);
+        return false;
+    }
+
+    if (pid == 0) {
+        // Child process
+
+        // Open the file for writing (create if doesn't exist, truncate if it does)
+        int fd = open(outputfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) {
+            perror("open");
+            exit(1);
+        }
+
+        // Redirect stdout to the file
+        if (dup2(fd, STDOUT_FILENO) < 0) {
+            perror("dup2");
+            close(fd);
+            exit(1);
+        }
+
+        close(fd);  // Safe to close original file descriptor after redirection
+
+        // Execute the command
+        execv(command[0], command);
+
+        // If execv returns, it failed
+        perror("execv");
+        exit(1);
+    } else {
+        // Parent process
+        int status;
+        if (waitpid(pid, &status, 0) == -1) {
+            perror("waitpid");
+            va_end(args);
+            return false;
+        }
+
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            va_end(args);
+            return true;
+        } else {
+            va_end(args);
+            return false;
+        }
+    }
+
 }
